@@ -144,6 +144,7 @@ describe("useLogFilterLogic", () => {
                 team_id: undefined,
                 api_key: undefined,
                 request_id: undefined,
+                session_id: undefined,
                 user_id: undefined,
                 end_user: undefined,
                 status_filter: undefined,
@@ -218,6 +219,7 @@ describe("useLogFilterLogic", () => {
       { filterKey: "Team ID", paramName: "team_id", value: "team-a" },
       { filterKey: "Key Hash", paramName: "api_key", value: "key-x" },
       { filterKey: "Request ID", paramName: "request_id", value: "req-xyz" },
+      { filterKey: "Session ID", paramName: "session_id", value: "session-a" },
       { filterKey: "User ID", paramName: "user_id", value: "user-123" },
       { filterKey: "End User", paramName: "end_user", value: "user-a" },
       { filterKey: "Status", paramName: "status_filter", value: "error" },
@@ -287,14 +289,14 @@ describe("useLogFilterLogic", () => {
       const { result } = renderFilterHook();
 
       act(() => {
-        result.current.handleFilterChange({ "Key Hash": "hash-1" });
+        result.current.handleFilterChange({ "Session ID": "session-a" });
       });
 
       await waitFor(
         () =>
           expect(uiSpendLogsCall).toHaveBeenCalledWith(
             expect.objectContaining({
-              params: expect.objectContaining({ api_key: "hash-1" }),
+              params: expect.objectContaining({ session_id: "session-a" }),
             }),
           ),
         { timeout: 500 },
@@ -308,13 +310,13 @@ describe("useLogFilterLogic", () => {
       vi.mocked(uiSpendLogsCall).mockClear();
 
       act(() => {
-        result.current.handleFilterChange({ "Key Hash": "hash-1" });
+        result.current.handleFilterChange({ "Session ID": "session-a" });
       });
 
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(uiSpendLogsCall).not.toHaveBeenCalledWith(
         expect.objectContaining({
-          params: expect.objectContaining({ api_key: "hash-1" }),
+          params: expect.objectContaining({ session_id: "session-a" }),
         }),
       );
 
@@ -322,7 +324,7 @@ describe("useLogFilterLogic", () => {
         () =>
           expect(uiSpendLogsCall).toHaveBeenCalledWith(
             expect.objectContaining({
-              params: expect.objectContaining({ api_key: "hash-1" }),
+              params: expect.objectContaining({ session_id: "session-a" }),
             }),
           ),
         { timeout: 500 },

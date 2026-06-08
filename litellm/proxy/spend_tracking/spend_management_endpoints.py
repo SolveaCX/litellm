@@ -1743,6 +1743,10 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         default=None,
         description="request_id to get spend logs for specific request_id",
     ),
+    session_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter spend logs by session_id",
+    ),
     team_id: Optional[str] = fastapi.Query(
         default=None,
         description="Filter spend logs by team_id",
@@ -1911,6 +1915,9 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         if request_id is not None:
             where_conditions["request_id"] = request_id
 
+        if session_id is not None:
+            where_conditions["session_id"] = session_id
+
         if model is not None:
             where_conditions["model"] = model
 
@@ -2041,6 +2048,7 @@ async def ui_view_spend_logs(  # noqa: PLR0915
             ('"user"', "user"),
             ("api_key", "api_key"),
             ("request_id", "request_id"),
+            ("session_id", "session_id"),
             ("model", "model"),
             ("model_id", "model_id"),
             ("model_group", "model_group"),

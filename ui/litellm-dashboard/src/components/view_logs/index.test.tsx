@@ -1,8 +1,8 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import SpendLogsTable from "./index";
 import { renderWithProviders } from "../../../tests/test-utils";
+import SpendLogsTable from "./index";
 
 const mockHandleFilterResetFromHook = vi.fn();
 vi.mock("./log_filter_logic", async (importOriginal) => {

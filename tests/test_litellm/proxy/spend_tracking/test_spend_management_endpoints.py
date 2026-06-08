@@ -86,6 +86,22 @@ def make_ui_spend_logs_mock_prisma(mock_spend_logs, filter_fn, team_lookup_fn=No
             skip = params[-1] if len(params) >= 1 else 0
             return filtered_holder[skip : skip + page_size]
 
+        async def group_by(self, *args, **kwargs):
+            session_ids = set(kwargs.get("where", {}).get("session_id", {}).get("in", []))
+            counts = []
+            for session_id in session_ids:
+                session_count = sum(
+                    1 for log in mock_spend_logs if log.get("session_id") == session_id
+                )
+                if session_count:
+                    counts.append(
+                        {
+                            "session_id": session_id,
+                            "_count": {"session_id": session_count},
+                        }
+                    )
+            return counts
+
     class MockPrismaClient:
         def __init__(self):
             self.db = MockDB()
@@ -506,6 +522,61 @@ async def test_ui_view_spend_logs_with_user_id(client, monkeypatch):
     assert data["total"] == 1
     assert len(data["data"]) == 1
     assert data["data"][0]["user"] == "test_user_1"
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_with_session_id(client, monkeypatch):
+    mock_spend_logs = [
+        {
+            "id": "log1",
+            "request_id": "req1",
+            "session_id": "session-a",
+            "api_key": "sk-test-key",
+            "user": "test_user_1",
+            "team_id": "team1",
+            "spend": 0.05,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-3.5-turbo",
+        },
+        {
+            "id": "log2",
+            "request_id": "req2",
+            "session_id": "session-b",
+            "api_key": "sk-test-key",
+            "user": "test_user_1",
+            "team_id": "team1",
+            "spend": 0.10,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+
+    def filter_by_session(where):
+        if where.get("session_id") == "session-a":
+            return [mock_spend_logs[0]]
+        return mock_spend_logs
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(mock_spend_logs, filter_by_session),
+    )
+
+    start_date, end_date = _default_date_range()
+    response = client.get(
+        "/spend/logs/ui",
+        params={
+            "session_id": "session-a",
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert len(data["data"]) == 1
+    assert data["data"][0]["session_id"] == "session-a"
 
 
 # Mock spend logs with distinct values for sorting tests.
