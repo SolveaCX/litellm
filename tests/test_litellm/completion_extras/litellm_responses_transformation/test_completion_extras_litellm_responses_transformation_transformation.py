@@ -1995,3 +1995,92 @@ def test_map_optional_params_preserves_reasoning_summary():
     assert responses_api_request["reasoning"] == {"effort": "high", "summary": "detailed"}
     assert responses_api_request["reasoning"]["effort"] == "high"
     assert responses_api_request["reasoning"]["summary"] == "detailed"
+
+
+def _collect_streamed_tool_call_arguments(chunks):
+    from litellm.completion_extras.litellm_responses_transformation.transformation import (
+        OpenAiResponsesToChatCompletionStreamIterator,
+    )
+
+    iterator = OpenAiResponsesToChatCompletionStreamIterator(
+        streaming_response=iter([]), sync_stream=True
+    )
+    arguments = {}
+    for chunk in chunks:
+        result = iterator.chunk_parser(chunk)
+        for choice in result.choices:
+            for tc in choice.delta.tool_calls or []:
+                arguments.setdefault(tc.index, "")
+                arguments[tc.index] += tc.function.arguments or ""
+    return arguments
+
+
+def _function_call_item(index, arguments):
+    return {
+        "type": "function_call",
+        "id": f"fc_{index}",
+        "call_id": f"call_{index}",
+        "name": "read_file",
+        "arguments": arguments,
+    }
+
+
+def test_streaming_parallel_tool_calls_without_argument_deltas():
+    """
+    codex-proxy-rs streams parallel function calls with only
+    function_call_arguments.done / output_item.done (no .delta events).
+    The arguments must still reach the chat completion stream.
+    """
+    paths = ['{"file_path": "/etc/hosts"}', '{"file_path": "/etc/passwd"}']
+    chunks = []
+    for index, args in enumerate(paths):
+        chunks += [
+            {
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": _function_call_item(index, ""),
+            },
+            {
+                "type": "response.function_call_arguments.done",
+                "output_index": index,
+                "item_id": f"fc_{index}",
+                "arguments": args,
+            },
+            {
+                "type": "response.output_item.done",
+                "output_index": index,
+                "item": _function_call_item(index, args),
+            },
+        ]
+
+    assert _collect_streamed_tool_call_arguments(chunks) == {0: paths[0], 1: paths[1]}
+
+
+def test_streaming_tool_call_arguments_not_duplicated_when_deltas_present():
+    args = '{"file_path": "/etc/hosts"}'
+    chunks = [
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": _function_call_item(0, ""),
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "item_id": "fc_0",
+            "delta": args[:10],
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "item_id": "fc_0",
+            "delta": args[10:],
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": _function_call_item(0, args),
+        },
+    ]
+
+    assert _collect_streamed_tool_call_arguments(chunks) == {0: args}

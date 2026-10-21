@@ -15,6 +15,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Set,
     Tuple,
     Union,
     cast,
@@ -967,6 +968,7 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
         self, streaming_response, sync_stream: bool, json_mode: Optional[bool] = False
     ):
         super().__init__(streaming_response, sync_stream, json_mode)
+        self._tool_call_indices_awaiting_args: Set[int] = set()
 
     def _handle_string_chunk(
         self, str_line: Union[str, "BaseModel"]
@@ -1268,6 +1270,37 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
         verbose_logger.debug(
             f"Chat provider: transform_streaming_response called with chunk: {chunk}"
         )
+        event_type = chunk.get("type")
+        if isinstance(event_type, ResponsesAPIStreamEvents):
+            event_type = event_type.value
+        tool_call_index = chunk.get("output_index", 0)
+        output_item = chunk.get("item") or {}
+        if (
+            event_type == "response.output_item.added"
+            and output_item.get("type") == "function_call"
+        ):
+            self._tool_call_indices_awaiting_args.add(tool_call_index)
+        elif event_type == "response.function_call_arguments.delta" and chunk.get(
+            "delta"
+        ):
+            self._tool_call_indices_awaiting_args.discard(tool_call_index)
+        elif event_type == "response.output_item.done":
+            # Some upstreams (e.g. codex-proxy-rs for parallel calls) skip
+            # function_call_arguments.delta and only send the full arguments here.
+            arguments = output_item.get("arguments")
+            if (
+                output_item.get("type") == "function_call"
+                and arguments
+                and tool_call_index in self._tool_call_indices_awaiting_args
+            ):
+                self._tool_call_indices_awaiting_args.discard(tool_call_index)
+                return OpenAiResponsesToChatCompletionStreamIterator.translate_responses_chunk_to_openai_stream(
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "output_index": tool_call_index,
+                        "delta": arguments,
+                    }
+                )
         return OpenAiResponsesToChatCompletionStreamIterator.translate_responses_chunk_to_openai_stream(
             chunk
         )
