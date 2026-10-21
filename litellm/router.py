@@ -7021,14 +7021,36 @@ class Router:
         # (e.g., loaded from DB) also have their custom pricing registered.
         # Without this, _is_model_cost_zero() cannot detect explicitly-configured
         # zero-cost models, causing budget checks to block free models.
+        _model_info_dict: dict = deployment.model_info.model_dump(exclude_none=True)
+        for field in CustomPricingLiteLLMParams.model_fields.keys():
+            field_value = deployment.litellm_params.get(field)
+            if field_value is not None:
+                _model_info_dict[field] = field_value
+
         _model_id = deployment.model_info.id
         if _model_id is not None:
-            _model_info_dict: dict = deployment.model_info.model_dump(exclude_none=True)
-            for field in CustomPricingLiteLLMParams.model_fields.keys():
-                field_value = deployment.litellm_params.get(field)
-                if field_value is not None:
-                    _model_info_dict[field] = field_value
             litellm.register_model(model_cost={_model_id: _model_info_dict})
+
+        ## REGISTER MODEL INFO IN LITELLM MODEL COST MAP
+        ## OLD MODEL REGISTRATION ## Kept to prevent breaking changes
+        ## (backport of upstream PR #27531: dynamically-added deployments, e.g.
+        ## loaded from DB, must also be registered under their backend model
+        ## name, otherwise supports_native_streaming() misses and the Responses
+        ## API falls back to fake streaming which drops tool-call events.)
+        _model_name = deployment.litellm_params.model
+        if deployment.litellm_params.custom_llm_provider is not None:
+            _model_name = (
+                deployment.litellm_params.custom_llm_provider + "/" + _model_name
+            )
+        _custom_pricing_fields = CustomPricingLiteLLMParams.model_fields.keys()
+        _shared_model_info = {
+            k: v for k, v in _model_info_dict.items() if k not in _custom_pricing_fields
+        }
+        _backend_alias_cost = {_model_name: _shared_model_info}
+        if "responses/" in _model_name:
+            _stripped_model_name = _model_name.replace("responses/", "")
+            _backend_alias_cost[_stripped_model_name] = _shared_model_info
+        litellm.register_model(model_cost=_backend_alias_cost)
 
         # add to model names
         self._add_model_to_list_and_index_map(
