@@ -23,6 +23,7 @@ from litellm.litellm_core_utils.thread_pool_executor import executor
 from litellm.llms.base_llm.responses.transformation import BaseResponsesAPIConfig
 from litellm.responses.utils import ResponsesAPIRequestUtils
 from litellm.types.llms.openai import (
+    FunctionCallArgumentsDeltaEvent,
     OutputTextDeltaEvent,
     ResponseAPIUsage,
     ResponseCompletedEvent,
@@ -62,6 +63,13 @@ class BaseResponsesAPIStreamingIterator:
         self.start_time = getattr(logging_obj, "start_time", datetime.now())
         self._failure_handled = False  # Track if failure handler has been called
         self._stream_created_time: float = time.time()
+        # Some upstreams (e.g. codex-proxy-rs for parallel tool calls) emit
+        # output_item.added -> function_call_arguments.done -> output_item.done
+        # with no function_call_arguments.delta. Clients such as LangChain only
+        # read tool arguments from .delta events, so we synthesize one from the
+        # final output_item.done when no delta was seen for that output_index.
+        self._tool_call_indices_awaiting_args: set = set()
+        self._pending_events: List[ResponsesAPIStreamingResponse] = []
 
         # track request context for hooks
         self.litellm_metadata = litellm_metadata
@@ -166,6 +174,15 @@ class BaseResponsesAPIStreamingIterator:
                                     )
                                     setattr(item, "encrypted_content", wrapped_content)
 
+                synthesized_delta = self._synthesize_missing_function_call_delta(
+                    openai_responses_api_chunk
+                )
+                if synthesized_delta is not None:
+                    # Emit the synthesized delta first; the real output_item.done
+                    # follows from the pending queue.
+                    self._pending_events.append(openai_responses_api_chunk)
+                    return synthesized_delta
+
                 # Store the completed response
                 if (
                     openai_responses_api_chunk
@@ -211,6 +228,46 @@ class BaseResponsesAPIStreamingIterator:
             # This ensures failures are logged even when _process_chunk is called directly
             self._handle_failure(e)
             raise
+
+    def _synthesize_missing_function_call_delta(
+        self, chunk: Any
+    ) -> Optional[FunctionCallArgumentsDeltaEvent]:
+        """
+        Track function_call output items and, when output_item.done arrives for
+        an item that never received a function_call_arguments.delta, return a
+        synthesized delta carrying the full arguments. Returns None otherwise.
+        """
+        event_type = getattr(chunk, "type", None)
+        if event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED:
+            item = getattr(chunk, "item", None)
+            if getattr(item, "type", None) == "function_call":
+                self._tool_call_indices_awaiting_args.add(
+                    getattr(chunk, "output_index", 0)
+                )
+            return None
+        if event_type == ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA:
+            if getattr(chunk, "delta", None):
+                self._tool_call_indices_awaiting_args.discard(
+                    getattr(chunk, "output_index", 0)
+                )
+            return None
+        if event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+            item = getattr(chunk, "item", None)
+            output_index = getattr(chunk, "output_index", 0)
+            arguments = getattr(item, "arguments", None)
+            if (
+                getattr(item, "type", None) == "function_call"
+                and arguments
+                and output_index in self._tool_call_indices_awaiting_args
+            ):
+                self._tool_call_indices_awaiting_args.discard(output_index)
+                return FunctionCallArgumentsDeltaEvent(
+                    type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+                    item_id=getattr(item, "id", None) or "",
+                    output_index=output_index,
+                    delta=arguments,
+                )
+        return None
 
     def _handle_logging_completed_response(self):
         """Base implementation - should be overridden by subclasses"""
@@ -404,6 +461,11 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         try:
             self._check_max_streaming_duration()
             while True:
+                if self._pending_events:
+                    pending = self._pending_events.pop(0)
+                    return await self._call_post_streaming_deployment_hook(
+                        chunk=pending,
+                    )
                 # Get the next chunk from the stream
                 try:
                     chunk = await self.stream_iterator.__anext__()
@@ -511,6 +573,12 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         try:
             self._check_max_streaming_duration()
             while True:
+                if self._pending_events:
+                    pending = self._pending_events.pop(0)
+                    return run_async_function(
+                        async_function=self._call_post_streaming_deployment_hook,
+                        chunk=pending,
+                    )
                 # Get the next chunk from the stream
                 try:
                     chunk = next(self.stream_iterator)
